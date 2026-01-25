@@ -5,6 +5,7 @@ import threading
 import queue
 import requests
 import tempfile
+import shutil
 import re
 from datetime import datetime, timezone
 from selenium import webdriver
@@ -826,12 +827,13 @@ def cleanup_stale_jobs(db_config, days=1):
     except Exception as e:
         print(f"[Cleanup] Failed to soft-delete stale jobs: {e}")
 
-def scrape_and_store(start_url, db_config, category):
+def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
     """
     Main function to orchestrate scraping from a URL and storing, including pagination
     and asynchronous database writes.
     """
     driver = None
+    user_data_dir = None
     data_queue = queue.Queue() # Queue for passing job data to the DB writer thread
     db_writer_thread = DatabaseWriter(db_config, data_queue, batch_size=20)
     db_writer_thread.start()
@@ -840,20 +842,20 @@ def scrape_and_store(start_url, db_config, category):
     page_num = 1
     total_jobs_scraped = 0
 
-    try:
+    def start_driver(url, page_label):
         chrome_options = Options()
         chrome_options.add_argument("--headless=new")
-        user_data_dir = tempfile.mkdtemp(prefix="chrome-user-data-")
-        chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+        local_user_data_dir = tempfile.mkdtemp(prefix="chrome-user-data-")
+        chrome_options.add_argument(f"--user-data-dir={local_user_data_dir}")
         chrome_options.add_argument("--no-sandbox")
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get(start_url)
-        print(f"[Main] Navigating to {start_url} (Page {page_num})...")
+        local_driver = webdriver.Chrome(options=chrome_options)
+        local_driver.get(url)
+        print(f"[Main] Navigating to {url} (Page {page_label})...")
 
         # --- Handle Cookie Consent ---
         try:
             print("[Main] Attempting to handle cookie consent...")
-            cookie_accept_button = WebDriverWait(driver, 5).until(
+            cookie_accept_button = WebDriverWait(local_driver, 5).until(
                 EC.element_to_be_clickable((By.ID, "jix-cookie-consent-accept-all"))
             )
             cookie_accept_button.click()
@@ -861,20 +863,21 @@ def scrape_and_store(start_url, db_config, category):
             time.sleep(1)
         except Exception as e:
             print(f"[Main] No cookie consent button found (id='jix-cookie-consent-accept-all') or error handling: {e}. Proceeding anyway.")
-        
+
         # --- Check for 404 Not Found Page (cookie consent will come first always) ---
         try:
-            page_source = driver.page_source
+            page_source = local_driver.page_source
             if '<h1>Siden kan ikke findes</h1>' in page_source:
-                print(f"[Main] 404 Not Found detected for URL: {start_url}. Skipping this category.")
-                return
+                print(f"[Main] 404 Not Found detected for URL: {url}. Skipping this category.")
+                local_driver.quit()
+                return None, local_user_data_dir
         except Exception as e:
             print(f"[Main] Error checking for 404 page: {e}")
 
         # --- Handle JobAgent Modal ---
         try:
             print("[Main] Attempting to close jobagent modal...")
-            jobagent_close_button = WebDriverWait(driver, 5).until(
+            jobagent_close_button = WebDriverWait(local_driver, 5).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button.close[data-dismiss='modal'][aria-label='Luk']"))
             )
             jobagent_close_button.click()
@@ -884,10 +887,16 @@ def scrape_and_store(start_url, db_config, category):
             print(f"[Main] No jobagent modal close button found or error handling: {e}. Proceeding anyway.")
 
         print("[Main] Waiting for job listings to appear...")
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(local_driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "div[id^='jobad-wrapper-']"))
         )
         print("[Main] Job listings found on page.")
+        return local_driver, local_user_data_dir
+
+    try:
+        driver, user_data_dir = start_driver(start_url, page_num)
+        if not driver:
+            return
 
         while True:
             html_content = driver.page_source
@@ -915,6 +924,17 @@ def scrape_and_store(start_url, db_config, category):
 
                 if next_page_url:
                     page_num += 1
+                    if restart_every_pages and page_num % restart_every_pages == 0:
+                        print(f"[Main] Restarting Selenium after {restart_every_pages} pages to limit memory growth...")
+                        if driver:
+                            driver.quit()
+                        if user_data_dir:
+                            shutil.rmtree(user_data_dir, ignore_errors=True)
+                        driver, user_data_dir = start_driver(next_page_url, page_num)
+                        if not driver:
+                            break
+                        continue
+
                     print(f"[Main] Navigating to next page: {next_page_url} (Page {page_num})...")
                     driver.get(next_page_url)
                     WebDriverWait(driver, 5).until(
@@ -934,6 +954,8 @@ def scrape_and_store(start_url, db_config, category):
         if driver:
             driver.quit()
             print("[Main] Selenium WebDriver closed.")
+        if user_data_dir:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
 
         # Signal the DB writer thread to stop and wait for it to finish
         print("[Main] Sending stop signal to DB writer and waiting for it to finish...")
@@ -966,14 +988,15 @@ if __name__ == "__main__":
         except Exception:
             nlp_en = spacy.load("en_core_web_md")
 
-    max_concurrent_threads = 8
+    max_concurrent_threads = 4
     semaphore = threading.Semaphore(max_concurrent_threads)
     threads = []
+    restart_every_pages = 200
 
     def scrape_category_thread(category, url, db_config):
         try:
             print(f"[Main] Starting scrape for category '{category}' with URL: {url}")
-            scrape_and_store(url, db_config, category)
+            scrape_and_store(url, db_config, category, restart_every_pages=restart_every_pages)
         except Exception as e:
             print(f"[Thread] Error in category {category}: {e}")
         finally:
