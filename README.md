@@ -19,6 +19,54 @@ JobScraper is a Python script that scrapes job postings from [jobindex.dk](https
 - Microsoft SQL Server (with network access)
 - ODBC Driver 17 for SQL Server
 
+## Ubuntu Setup (Headless)
+
+Below installs everything needed to run the scraper headless on Ubuntu (tested on 22.04/24.04). Run in a fresh shell.
+
+```sh
+# Update base
+sudo apt update && sudo apt upgrade -y
+
+# Core tools
+sudo apt install -y curl wget gnupg apt-transport-https software-properties-common build-essential pkg-config
+
+# Chrome (stable) for headless Selenium
+wget -qO- https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-linux-signing-keyring.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux-signing-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+sudo apt update && sudo apt install -y google-chrome-stable
+
+# Matching ChromeDriver (auto-matching script)
+CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
+BASE_VERSION=$(echo "$CHROME_VERSION" | cut -d. -f1-3)
+DRIVER_ZIP=chromedriver-linux64.zip
+wget -q https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$BASE_VERSION/linux64/$DRIVER_ZIP
+unzip -o $DRIVER_ZIP
+sudo install -m 0755 chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+rm -rf $DRIVER_ZIP chromedriver-linux64
+
+# ODBC Driver 17 for SQL Server
+curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+sudo apt update
+sudo ACCEPT_EULA=Y apt install -y msodbcsql17 unixodbc-dev
+
+# Python 3 + venv (use system Python or pyenv as you prefer)
+sudo apt install -y python3 python3-venv python3-pip
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Python deps for scraper
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install selenium beautifulsoup4 requests pyodbc spacy yake rake-nltk
+
+# spaCy models (headless, no GUI needed)
+python -m spacy download da_core_news_md
+python -m spacy download en_core_web_lg
+
+# Run headless (Chrome is headless by default via script flags)
+python scraper.py
+```
+
 ### Python Packages
 
 

@@ -7,6 +7,7 @@ import requests
 import tempfile
 import shutil
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -29,6 +30,9 @@ JOBINDEX_URLS = {}
 DATABASE_CONFIG = {}
 JOBINDEX_BASE_URL = "https://www.jobindex.dk"
 EXISTING_JOB_URLS = set()
+RECENT_URL_CACHE = OrderedDict()
+RECENT_URL_LIMIT = 50000
+RECENT_URL_LOCK = threading.Lock()
 """
 Global banned keywords list. These are filtered from JobKeywords. Combined with spaCy DA/EN stopwords and optional config overrides.
 """
@@ -64,6 +68,23 @@ if yake:
     except Exception as e:
         print(f"[Keywords] Failed to initialize YAKE English extractor: {e}")
         YAKE_EXTRACTOR_EN = None
+
+def is_recent_url(url):
+    with RECENT_URL_LOCK:
+        if url in RECENT_URL_CACHE:
+            RECENT_URL_CACHE.move_to_end(url)
+            return True
+        return False
+
+
+def add_recent_url(url):
+    with RECENT_URL_LOCK:
+        if url in RECENT_URL_CACHE:
+            RECENT_URL_CACHE.move_to_end(url)
+        else:
+            RECENT_URL_CACHE[url] = None
+            if len(RECENT_URL_CACHE) > RECENT_URL_LIMIT:
+                RECENT_URL_CACHE.popitem(last=False)
 
 def setup_existing_joburls():
     conn = pyodbc.connect(
@@ -207,13 +228,34 @@ class DatabaseWriter(threading.Thread):
                 self.cnxn.close()
                 print("[DB Writer] Database connection closed.")
 
+    def _fetch_existing_urls(self, urls):
+        if not urls:
+            return set()
+        placeholders = ",".join(["?"] * len(urls))
+        try:
+            self.cursor.execute(
+                f"SELECT JobUrl FROM JobIndexPostingsExtended WHERE JobUrl IN ({placeholders})",
+                urls
+            )
+            return {row[0] for row in self.cursor.fetchall()}
+        except pyodbc.Error as ex:
+            print(f"[DB Writer] Error checking existing URLs: {ex}")
+            return set()
+
     def insert_job_data_batch(self, job_batch):
         try:
+            url_list = [j.get("JobUrl") for j in job_batch if j.get("JobUrl")]
+            existing_in_db = set()
+            chunk_size = 100
+            for idx in range(0, len(url_list), chunk_size):
+                chunk = url_list[idx: idx + chunk_size]
+                existing_in_db.update(self._fetch_existing_urls(chunk))
+
             for job_data in job_batch:
-                self.cursor.execute("SELECT JobUrl FROM JobIndexPostingsExtended WHERE JobUrl = ?", job_data["JobUrl"])
-                if self.cursor.fetchone():
-                    self.update_seen_last_for_joburl(job_data["JobUrl"])
-                    self.update_category_for_joburl(job_data["JobUrl"], job_data["Category"])
+                job_url = job_data.get("JobUrl")
+                if job_url and job_url in existing_in_db:
+                    self.update_seen_last_for_joburl(job_url)
+                    self.update_category_for_joburl(job_url, job_data["Category"])
                 else:
                     self.insert_job_data_single(job_data, commit=False)
             self.cnxn.commit()
@@ -497,28 +539,27 @@ def extract_job_data(html_content, category):
                         footer_url = JOBINDEX_BASE_URL + footer_url
                     footer_picture_bytes = download_image_as_bytes(footer_url)
 
-        if job_url:
-            if job_url in EXISTING_JOB_URLS:
-                print(f"[JobUrl Skipped] JobUrl already exists, skipping SpaCy extraction.: {job_url}")
-            else:
-                try:
-                    if job_url.startswith('/'):
-                        job_url_full = JOBINDEX_BASE_URL + job_url
-                    elif job_url.startswith('http'):
-                        job_url_full = job_url
-                    else:
-                        job_url_full = JOBINDEX_BASE_URL + '/' + job_url.lstrip('/')
-                    resp = requests.get(job_url_full, timeout=5)
-                    if resp.status_code == 200:
-                        soup2 = BeautifulSoup(resp.text, 'html.parser')
-                        _, _, full_text = get_main_content(soup2, job_url_full)
-                        job_description = extract_job_description(full_text, category_name)
-                        job_description = dedupe_description_lines(job_description)
-                        doc_da = nlp_da(full_text)
-                        doc_en = nlp_en(full_text)
-                        company_name, company_url, job_location = extract_fallbacks(company_name, company_url, job_location, doc_da, doc_en, full_text)
-                except Exception as e:
-                    print(f"[JobUrl Description] Failed to fetch or extract description from {job_url}: {e}")
+        if job_url and is_recent_url(job_url):
+            print(f"[JobUrl Skipped] JobUrl already processed recently, skipping SpaCy extraction.: {job_url}")
+        elif job_url:
+            try:
+                if job_url.startswith('/'):
+                    job_url_full = JOBINDEX_BASE_URL + job_url
+                elif job_url.startswith('http'):
+                    job_url_full = job_url
+                else:
+                    job_url_full = JOBINDEX_BASE_URL + '/' + job_url.lstrip('/')
+                resp = requests.get(job_url_full, timeout=5)
+                if resp.status_code == 200:
+                    soup2 = BeautifulSoup(resp.text, 'html.parser')
+                    _, _, full_text = get_main_content(soup2, job_url_full)
+                    job_description = extract_job_description(full_text, category_name)
+                    job_description = dedupe_description_lines(job_description)
+                    doc_da = nlp_da(full_text)
+                    doc_en = nlp_en(full_text)
+                    company_name, company_url, job_location = extract_fallbacks(company_name, company_url, job_location, doc_da, doc_en, full_text)
+            except Exception as e:
+                print(f"[JobUrl Description] Failed to fetch or extract description from {job_url}: {e}")
 
         published_div = job_ad.find('div', class_='jix-toolbar__pubdate')
         if published_div:
@@ -636,7 +677,7 @@ def extract_job_data(html_content, category):
             "KeywordsDetailed": keywords_detailed,
         })
         if job_url:
-            EXISTING_JOB_URLS.add(job_url)
+            add_recent_url(job_url)
     return job_listings
 
 def download_image_as_bytes(url):
@@ -834,10 +875,9 @@ def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
     """
     driver = None
     user_data_dir = None
-    data_queue = queue.Queue() # Queue for passing job data to the DB writer thread
+    data_queue = queue.Queue(maxsize=200)  # Bounded queue for backpressure
     db_writer_thread = DatabaseWriter(db_config, data_queue, batch_size=20)
     db_writer_thread.start()
-    setup_existing_joburls()  
 
     page_num = 1
     total_jobs_scraped = 0
@@ -972,23 +1012,23 @@ if __name__ == "__main__":
     import spacy
     from spacy.util import is_package
     try:
-        nlp_da = spacy.load("da_core_news_lg")
+        nlp_da = spacy.load("da_core_news_trf")
     except Exception:
         try:
-            spacy.cli.download("da_core_news_lg")
-            nlp_da = spacy.load("da_core_news_lg")
+            spacy.cli.download("da_core_news_trf")
+            nlp_da = spacy.load("da_core_news_trf")
         except Exception:
             nlp_da = spacy.load("da_core_news_sm")
     try:
-        nlp_en = spacy.load("en_core_web_lg")
+        nlp_en = spacy.load("en_core_web_trf")
     except Exception:
         try:
-            spacy.cli.download("en_core_web_lg")
-            nlp_en = spacy.load("en_core_web_lg")
+            spacy.cli.download("en_core_web_trf")
+            nlp_en = spacy.load("en_core_web_trf")
         except Exception:
             nlp_en = spacy.load("en_core_web_md")
 
-    max_concurrent_threads = 4
+    max_concurrent_threads = 2
     semaphore = threading.Semaphore(max_concurrent_threads)
     threads = []
     restart_every_pages = 200
