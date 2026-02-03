@@ -949,7 +949,7 @@ def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-software-rasterizer")
         chrome_options.add_argument("--js-flags=--max-old-space-size=512")  # Limit V8 heap
-        chrome_options.add_argument("--single-process")  # Reduce multi-process overhead
+        # Note: --single-process removed - causes Chrome crashes on Windows
         chrome_options.add_argument("--disable-background-networking")
         chrome_options.add_argument("--disable-default-apps")
         chrome_options.add_argument("--disable-hang-monitor")
@@ -1118,10 +1118,10 @@ if __name__ == "__main__":
     
     print(f"[Main] spaCy models loaded. DA: {nlp_da.meta['name']}, EN: {nlp_en.meta['name']}")
 
-    max_concurrent_threads = 2
+    max_concurrent_threads = 6
     semaphore = threading.Semaphore(max_concurrent_threads)
     threads = []
-    restart_every_pages = 50
+    restart_every_pages = 200
 
     def scrape_category_thread(category, url, db_config):
         try:
