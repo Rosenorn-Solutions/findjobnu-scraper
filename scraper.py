@@ -4,9 +4,12 @@ import time
 import threading
 import queue
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import tempfile
 import shutil
 import re
+import gc
 from collections import OrderedDict
 from datetime import datetime, timezone
 from selenium import webdriver
@@ -33,6 +36,33 @@ EXISTING_JOB_URLS = set()
 RECENT_URL_CACHE = OrderedDict()
 RECENT_URL_LIMIT = 50000
 RECENT_URL_LOCK = threading.Lock()
+
+# Reusable requests session with connection pooling to prevent socket/connection leaks
+HTTP_SESSION = None
+HTTP_SESSION_LOCK = threading.Lock()
+
+def get_http_session():
+    """Get or create a thread-safe requests session with connection pooling."""
+    global HTTP_SESSION
+    if HTTP_SESSION is None:
+        with HTTP_SESSION_LOCK:
+            if HTTP_SESSION is None:
+                session = requests.Session()
+                retry_strategy = Retry(
+                    total=3,
+                    backoff_factor=0.5,
+                    status_forcelist=[429, 500, 502, 503, 504]
+                )
+                adapter = HTTPAdapter(
+                    pool_connections=10,
+                    pool_maxsize=20,
+                    max_retries=retry_strategy
+                )
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+                HTTP_SESSION = session
+    return HTTP_SESSION
+
 """
 Global banned keywords list. These are filtered from JobKeywords. Combined with spaCy DA/EN stopwords and optional config overrides.
 """
@@ -87,6 +117,7 @@ def add_recent_url(url):
                 RECENT_URL_CACHE.popitem(last=False)
 
 def setup_existing_joburls():
+    """Load recent job URLs from database - limited to prevent memory bloat."""
     conn = pyodbc.connect(
         'DRIVER={ODBC Driver 17 for SQL Server};'
         f'SERVER={DATABASE_CONFIG["server"]};'
@@ -95,10 +126,17 @@ def setup_existing_joburls():
         f'PWD={DATABASE_CONFIG["password"]}'
     )
     cursor = conn.cursor()
-    cursor.execute("SELECT JobUrl FROM JobIndexPostingsExtended")
+    # Only load URLs from the last 7 days to limit memory usage
+    # Older jobs will be treated as new (SeenLast update will still work correctly)
+    cursor.execute("""
+        SELECT JobUrl FROM JobIndexPostingsExtended 
+        WHERE SeenLast >= DATEADD(day, -7, GETUTCDATE())
+        OR Published >= DATEADD(day, -7, GETUTCDATE())
+    """)
     rows = cursor.fetchall()
     for row in rows:
         EXISTING_JOB_URLS.add(row[0])
+    print(f"[Main] Loaded {len(EXISTING_JOB_URLS)} recent job URLs from database")
     cursor.close()
     conn.close()
 
@@ -549,15 +587,24 @@ def extract_job_data(html_content, category):
                     job_url_full = job_url
                 else:
                     job_url_full = JOBINDEX_BASE_URL + '/' + job_url.lstrip('/')
-                resp = requests.get(job_url_full, timeout=5)
+                resp = get_http_session().get(job_url_full, timeout=5)
                 if resp.status_code == 200:
-                    soup2 = BeautifulSoup(resp.text, 'html.parser')
+                    # Limit text size to prevent spaCy memory explosion on huge pages
+                    page_text = resp.text[:500000] if len(resp.text) > 500000 else resp.text
+                    soup2 = BeautifulSoup(page_text, 'html.parser')
                     _, _, full_text = get_main_content(soup2, job_url_full)
-                    job_description = extract_job_description(full_text, category_name)
+                    # Truncate full_text for spaCy processing to prevent memory issues
+                    full_text_limited = full_text[:100000] if len(full_text) > 100000 else full_text
+                    job_description = extract_job_description(full_text_limited, category_name)
                     job_description = dedupe_description_lines(job_description)
-                    doc_da = nlp_da(full_text)
-                    doc_en = nlp_en(full_text)
-                    company_name, company_url, job_location = extract_fallbacks(company_name, company_url, job_location, doc_da, doc_en, full_text)
+                    doc_da = nlp_da(full_text_limited)
+                    doc_en = nlp_en(full_text_limited)
+                    company_name, company_url, job_location = extract_fallbacks(company_name, company_url, job_location, doc_da, doc_en, full_text_limited)
+                    # Explicitly delete large objects to help garbage collector
+                    del doc_da, doc_en, soup2, full_text_limited
+                # Release response memory
+                resp.close()
+                del resp
             except Exception as e:
                 print(f"[JobUrl Description] Failed to fetch or extract description from {job_url}: {e}")
 
@@ -678,13 +725,19 @@ def extract_job_data(html_content, category):
         })
         if job_url:
             add_recent_url(job_url)
+    
+    # Help garbage collector clean up BeautifulSoup objects
+    del soup
     return job_listings
 
 def download_image_as_bytes(url):
     try:
-        response = requests.get(url, timeout=10)
+        response = get_http_session().get(url, timeout=10)
         if response.status_code == 200:
-            return response.content
+            content = response.content
+            response.close()
+            return content
+        response.close()
     except Exception as e:
         print(f"[Image Download] Failed to download {url}: {e}")
     return None
@@ -888,6 +941,25 @@ def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
         local_user_data_dir = tempfile.mkdtemp(prefix="chrome-user-data-")
         chrome_options.add_argument(f"--user-data-dir={local_user_data_dir}")
         chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-notifications")
+        chrome_options.add_argument("--disable-features=PushMessaging,EnableSystemPushMessaging,PermissionRequestManager")
+        # Memory optimization arguments for long-running processes
+        chrome_options.add_argument("--disable-dev-shm-usage")  # Overcome limited /dev/shm in containers
+        chrome_options.add_argument("--disable-gpu")  # Reduce GPU memory usage
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-software-rasterizer")
+        chrome_options.add_argument("--js-flags=--max-old-space-size=512")  # Limit V8 heap
+        chrome_options.add_argument("--single-process")  # Reduce multi-process overhead
+        chrome_options.add_argument("--disable-background-networking")
+        chrome_options.add_argument("--disable-default-apps")
+        chrome_options.add_argument("--disable-hang-monitor")
+        chrome_options.add_argument("--disable-popup-blocking")
+        chrome_options.add_argument("--disable-prompt-on-repost")
+        chrome_options.add_argument("--disable-sync")
+        chrome_options.add_argument("--disable-translate")
+        chrome_options.add_argument("--metrics-recording-only")
+        chrome_options.add_argument("--no-first-run")
+        chrome_options.add_argument("--safebrowsing-disable-auto-update")
         local_driver = webdriver.Chrome(options=chrome_options)
         local_driver.get(url)
         print(f"[Main] Navigating to {url} (Page {page_label})...")
@@ -942,6 +1014,9 @@ def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
             html_content = driver.page_source
             current_page_listings = extract_job_data(html_content, category)
             
+            # Clear html_content reference immediately after use
+            del html_content
+            
             if current_page_listings:
                 data_queue.put(current_page_listings)
                 # Count only new jobs for total_jobs_scraped
@@ -951,6 +1026,10 @@ def scrape_and_store(start_url, db_config, category, restart_every_pages=200):
             else:
                 print(f"[Main] No job listings found on Page {page_num}. This page might be empty or end of results.")
 
+            # Periodic garbage collection to prevent memory buildup
+            if page_num % 10 == 0:
+                gc.collect()
+                print(f"[Main] Garbage collection triggered after page {page_num}")
 
             # --- Pagination Logic ---
             try:
@@ -1011,27 +1090,38 @@ if __name__ == "__main__":
     import threading
     import spacy
     from spacy.util import is_package
+    
+    # Use smaller, more memory-efficient models for production
+    # The transformer models (trf) use ~2-4GB RAM each and leak memory over time
+    print("[Main] Loading spaCy models (using memory-efficient variants)...")
     try:
-        nlp_da = spacy.load("da_core_news_trf")
+        # Prefer smaller models for long-running processes
+        nlp_da = spacy.load("da_core_news_sm")
     except Exception:
         try:
-            spacy.cli.download("da_core_news_trf")
-            nlp_da = spacy.load("da_core_news_trf")
+            spacy.cli.download("da_core_news_sm")
+            nlp_da = spacy.load("da_core_news_sm")
         except Exception:
             nlp_da = spacy.load("da_core_news_sm")
     try:
-        nlp_en = spacy.load("en_core_web_trf")
+        nlp_en = spacy.load("en_core_web_sm")
     except Exception:
         try:
-            spacy.cli.download("en_core_web_trf")
-            nlp_en = spacy.load("en_core_web_trf")
+            spacy.cli.download("en_core_web_sm")
+            nlp_en = spacy.load("en_core_web_sm")
         except Exception:
             nlp_en = spacy.load("en_core_web_md")
+    
+    # Set max_length to prevent memory issues on large documents
+    nlp_da.max_length = 100000
+    nlp_en.max_length = 100000
+    
+    print(f"[Main] spaCy models loaded. DA: {nlp_da.meta['name']}, EN: {nlp_en.meta['name']}")
 
     max_concurrent_threads = 2
     semaphore = threading.Semaphore(max_concurrent_threads)
     threads = []
-    restart_every_pages = 200
+    restart_every_pages = 50
 
     def scrape_category_thread(category, url, db_config):
         try:
@@ -1047,9 +1137,23 @@ if __name__ == "__main__":
         t = threading.Thread(target=scrape_category_thread, args=(category, url, DATABASE_CONFIG))
         t.start()
         threads.append(t)
+        
+        # Clean up finished threads periodically to free memory
+        threads = [t for t in threads if t.is_alive()]
+        
+        # Periodic garbage collection between categories
+        if len(threads) % 10 == 0:
+            gc.collect()
 
     for t in threads:
         t.join()
+
+    # Final cleanup
+    gc.collect()
+    
+    # Close HTTP session
+    if HTTP_SESSION is not None:
+        HTTP_SESSION.close()
 
     cleanup_stale_jobs(DATABASE_CONFIG, days=1)
     print("[Main] All category threads have completed.")
