@@ -13,6 +13,9 @@ from .jobindex_parser import parse_jobindex_listing_page
 logger = logging.getLogger(__name__)
 
 
+_UNAVAILABLE_CATEGORY_STATUS_CODES = {404, 410}
+
+
 class JobindexListingCollector:
     def __init__(self, settings: Settings, session: Session | None = None) -> None:
         self.settings = settings
@@ -35,7 +38,7 @@ class JobindexListingCollector:
             try:
                 response.raise_for_status()
             except HTTPError:
-                if response.status_code == 404:
+                if response.status_code in _UNAVAILABLE_CATEGORY_STATUS_CODES:
                     logger.warning(
                         "Skipping unavailable Jobindex category page %s for %s",
                         next_page_url,

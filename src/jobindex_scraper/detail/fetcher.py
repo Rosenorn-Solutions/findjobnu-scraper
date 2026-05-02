@@ -16,7 +16,7 @@ from ..models import DetailFetchResult, DetailFetchTask
 class JobDetailFetcher:
     def __init__(self, settings: Settings, session: Session | None = None) -> None:
         self.settings = settings
-        self.session = session or build_session(settings)
+        self.session = session or build_session(settings, retry_transport_errors=False)
 
     def fetch_tasks(
         self,

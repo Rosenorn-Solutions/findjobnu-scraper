@@ -78,6 +78,25 @@ class ListingCollectorTests(unittest.TestCase):
         with self.assertRaises(HTTPError):
             collector.collect_pages(category=self.category, max_pages=1)
 
+    def test_collect_pages_returns_empty_list_for_gone_category(self) -> None:
+        session = _FakeSession(
+            [
+                _FakeResponse(
+                    status_code=410,
+                    url="https://www.jobindex.dk/jobsoegning?subid=5",
+                )
+            ]
+        )
+        collector = JobindexListingCollector(settings=self.settings, session=session)
+
+        page_results = collector.collect_pages(category=self.category, max_pages=3)
+
+        self.assertEqual(page_results, [])
+        self.assertEqual(
+            session.calls,
+            [("https://www.jobindex.dk/jobsoegning?subid=5", 20.0)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

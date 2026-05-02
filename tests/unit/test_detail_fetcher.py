@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 import requests
@@ -90,6 +90,19 @@ class DetailFetcherTests(unittest.TestCase):
         self.assertIsNone(result.detail_html_hash)
         self.assertIsNone(result.html_content)
         self.assertEqual(result.error_message, "connection dropped")
+
+    @patch("jobindex_scraper.detail.fetcher.build_session")
+    def test_init_builds_session_without_transport_retries(self, build_session_mock) -> None:
+        fake_session = object()
+        build_session_mock.return_value = fake_session
+
+        fetcher = JobDetailFetcher(settings=self.settings)
+
+        self.assertIs(fetcher.session, fake_session)
+        build_session_mock.assert_called_once_with(
+            self.settings,
+            retry_transport_errors=False,
+        )
 
 
 if __name__ == "__main__":

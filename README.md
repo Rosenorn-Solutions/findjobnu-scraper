@@ -532,7 +532,7 @@ sudo -u jobindex /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.
 
 The wrapper auto-loads `/etc/jobindex-scraper.env` before starting the scraper, so the manual command above uses the same environment file as the systemd service. If you keep the file somewhere else, set `JOBINDEX_SCRAPER_ENV_FILE=/path/to/file.env` before invoking the wrapper.
 
-If Jobindex returns `404` for a subid in the configured sequence, the scraper logs that category as unavailable and continues with the remaining subids instead of aborting the full run.
+If Jobindex returns `404` or `410` for a subid in the configured sequence, the scraper logs that category as unavailable and continues with the remaining subids instead of aborting the full run.
 
 Optional overrides:
 
@@ -675,6 +675,10 @@ That is expected with the current codebase. Runtime configuration is environment
 That usually means the host is still using the generic extractor and needs a host-specific parser in `src/jobindex_scraper/detail/extractor.py`.
 
 Use referral statistics plus a live sample URL to prioritize the next host to support.
+
+### TLS certificate warnings during detail fetches
+
+Some third-party job hosts have broken or incomplete certificate chains. Detail fetches now fail those requests once, record the fetch failure, and continue the run instead of retrying the same TLS error repeatedly.
 
 ## Further reading
 

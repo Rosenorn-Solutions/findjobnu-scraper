@@ -7,10 +7,18 @@ from urllib3.util.retry import Retry
 from ..config import Settings
 
 
-def build_session(settings: Settings) -> requests.Session:
+def build_session(
+    settings: Settings,
+    *,
+    retry_transport_errors: bool = True,
+) -> requests.Session:
     session = requests.Session()
     retry_strategy = Retry(
         total=3,
+        connect=3 if retry_transport_errors else 0,
+        read=3 if retry_transport_errors else 0,
+        status=3,
+        other=3 if retry_transport_errors else 0,
         backoff_factor=0.5,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "HEAD"],
