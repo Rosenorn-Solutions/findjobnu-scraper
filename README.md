@@ -523,10 +523,13 @@ Run it once manually first:
 sudo -u jobindex /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.sh
 ```
 
+The wrapper auto-loads `/etc/jobindex-scraper.env` before starting the scraper, so the manual command above uses the same environment file as the systemd service. If you keep the file somewhere else, set `JOBINDEX_SCRAPER_ENV_FILE=/path/to/file.env` before invoking the wrapper.
+
 Optional overrides:
 
 - Set `JOBINDEX_SCRAPER_SUBIDS` in `/etc/jobindex-scraper.env` to run only a specific subset, for example `JOBINDEX_SCRAPER_SUBIDS="1 10 11 16 17 21 24 27 28"`.
 - Set `MAX_PAGES` in the service environment if you want the full-run wrapper to use something other than `999`.
+- Set `JOBINDEX_SCRAPER_ENV_FILE` only if you want the wrapper to read a different env file than `/etc/jobindex-scraper.env`.
 
 ### systemd service for the full run
 
