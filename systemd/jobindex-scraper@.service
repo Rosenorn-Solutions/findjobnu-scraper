@@ -1,0 +1,17 @@
+[Unit]
+Description=Jobindex scraper for Jobindex subid %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobindex
+Group=jobindex
+WorkingDirectory=/opt/jobindex-scraper/findjobnu-scraper
+EnvironmentFile=/etc/jobindex-scraper.env
+ExecStart=/opt/jobindex-scraper/findjobnu-scraper/.venv/bin/jobindex-scraper --subid %i --max-pages 999 --record-run --fetch-details
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
