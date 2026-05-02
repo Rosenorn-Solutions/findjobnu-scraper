@@ -3,9 +3,14 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
+from urllib.parse import urljoin
 from uuid import UUID
 
+import requests
+
+from ..catalog import JOBINDEX_BASE_URL
 from ..config import Settings
+from ..http.client import build_session
 from ..models import (
     CategoryRecord,
     DetailExtractionFailure,
@@ -24,6 +29,7 @@ from .repositories import (
     CategoryRepository,
     EventRepository,
     JobCategoryRepository,
+    JobImageRepository,
     JobRepository,
     ObservationRepository,
     RunRepository,
@@ -44,7 +50,10 @@ class PersistenceWriter:
         job_category_repository: JobCategoryRepository | None = None,
         observation_repository: ObservationRepository | None = None,
         snapshot_repository: SnapshotRepository | None = None,
+        job_image_repository: JobImageRepository | None = None,
         event_repository: EventRepository | None = None,
+        image_session: Any | None = None,
+        image_timeout_seconds: float = 20.0,
     ) -> None:
         self.connection = connection
         self.run_repository = run_repository or RunRepository(connection)
@@ -53,7 +62,10 @@ class PersistenceWriter:
         self.job_category_repository = job_category_repository or JobCategoryRepository(connection)
         self.observation_repository = observation_repository or ObservationRepository(connection)
         self.snapshot_repository = snapshot_repository or SnapshotRepository(connection)
+        self.job_image_repository = job_image_repository or JobImageRepository(connection)
         self.event_repository = event_repository or EventRepository(connection)
+        self.image_session = image_session
+        self.image_timeout_seconds = image_timeout_seconds
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "PersistenceWriter":
@@ -61,7 +73,11 @@ class PersistenceWriter:
             raise PersistenceConfigurationError(
                 "JOBINDEX_SCRAPER_DATABASE_URL must be set when --record-run is used. Provide a SQL Server ODBC connection string or omit --record-run for stats-only runs such as --dump-referral-stats."
             )
-        return cls(connection=connect(settings.database_url))
+        return cls(
+            connection=connect(settings.database_url),
+            image_session=build_session(settings, retry_transport_errors=False),
+            image_timeout_seconds=settings.http_timeout_seconds,
+        )
 
     def start_run(self, settings: Settings, notes: str | None = None) -> ScrapeRunRecord:
         scrape_run = self.run_repository.create_run(
@@ -225,9 +241,12 @@ class PersistenceWriter:
         snapshots_written = 0
 
         for extracted_detail in extracted_details:
+            banner_image_id, footer_image_id = self._persist_listing_images(extracted_detail)
             job_snapshot_id = self.snapshot_repository.upsert_snapshot(
                 extracted_detail=extracted_detail,
                 extraction_version=extraction_version,
+                banner_image_id=banner_image_id,
+                footer_image_id=footer_image_id,
             )
             self.job_repository.set_current_snapshot(
                 job_id=extracted_detail.job_id,
@@ -241,9 +260,11 @@ class PersistenceWriter:
                 canonical_job_url=extracted_detail.canonical_job_url,
                 source_host=extracted_detail.source_host,
                 details={
+                    "banner_image_id": banner_image_id,
                     "description_text_hash": extracted_detail.description_text_hash,
                     "detail_html_hash": extracted_detail.detail_html_hash,
                     "detail_refresh_reason": extracted_detail.detail_refresh_reason,
+                    "footer_image_id": footer_image_id,
                     "job_title_normalized": extracted_detail.job_title_normalized,
                 },
             )
@@ -301,6 +322,54 @@ class PersistenceWriter:
     def close(self) -> None:
         self.connection.close()
 
+    def _persist_listing_images(self, extracted_detail: ExtractedDetail) -> tuple[int | None, int | None]:
+        return (
+            self._persist_listing_image(
+                job_id=extracted_detail.job_id,
+                image_role="banner",
+                raw_url=extracted_detail.banner_image_url_raw,
+            ),
+            self._persist_listing_image(
+                job_id=extracted_detail.job_id,
+                image_role="footer",
+                raw_url=extracted_detail.footer_image_url_raw,
+            ),
+        )
+
+    def _persist_listing_image(
+        self,
+        job_id: int,
+        image_role: str,
+        raw_url: str | None,
+    ) -> int | None:
+        source_url = _normalize_image_source_url(raw_url)
+        if not source_url or self.image_session is None:
+            return None
+
+        try:
+            response = self.image_session.get(source_url, timeout=self.image_timeout_seconds)
+            response.raise_for_status()
+        except requests.RequestException:
+            return None
+
+        image_bytes = response.content
+        if not image_bytes:
+            return None
+
+        content_type = response.headers.get("Content-Type") if getattr(response, "headers", None) else None
+        if content_type is not None:
+            content_type = content_type.split(";", 1)[0].strip() or None
+        if content_type is not None and not content_type.lower().startswith("image/"):
+            return None
+
+        return self.job_image_repository.upsert_image(
+            job_id=job_id,
+            image_role=image_role,
+            source_url=source_url,
+            content_type=content_type,
+            image_bytes=image_bytes,
+        )
+
 
 def _build_detail_fetch_task(
     scrape_run_id: UUID,
@@ -332,3 +401,12 @@ def _is_success_status(http_status: int | None) -> bool:
     if http_status is None:
         return False
     return 200 <= http_status < 400
+
+
+def _normalize_image_source_url(raw_url: str | None) -> str | None:
+    if raw_url is None:
+        return None
+    normalized = raw_url.strip()
+    if not normalized:
+        return None
+    return urljoin(JOBINDEX_BASE_URL, normalized)

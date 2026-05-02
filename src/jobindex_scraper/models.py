@@ -102,6 +102,8 @@ class ExtractedDetail:
     location_normalized: str | None
     published_raw: str | None
     published_utc: datetime | None
+    banner_image_url_raw: str | None
+    footer_image_url_raw: str | None
     job_description_raw: str
     job_description_clean: str
     description_text_hash: str

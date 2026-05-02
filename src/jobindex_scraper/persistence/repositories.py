@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -377,11 +378,80 @@ class ObservationRepository:
             _close_cursor(cursor)
 
 
+class JobImageRepository:
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+
+    def upsert_image(
+        self,
+        job_id: int,
+        image_role: str,
+        source_url: str,
+        content_type: str | None,
+        image_bytes: bytes,
+    ) -> int:
+        content_sha256 = hashlib.sha256(image_bytes).hexdigest()
+
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT job_image_id
+                FROM job_images
+                WHERE job_id = ?
+                  AND image_role = ?
+                  AND content_sha256 = ?
+                """,
+                (job_id, image_role, content_sha256),
+            )
+            row = cursor.fetchone()
+            if row is not None:
+                job_image_id = int(row[0])
+                cursor.execute(
+                    """
+                    UPDATE job_images
+                    SET source_url = ?,
+                        content_type = ?,
+                        fetched_at = SYSUTCDATETIME()
+                    WHERE job_image_id = ?
+                    """,
+                    (source_url, content_type, job_image_id),
+                )
+                return job_image_id
+
+            cursor.execute(
+                """
+                INSERT INTO job_images (
+                    job_id,
+                    image_role,
+                    source_url,
+                    content_type,
+                    content_sha256,
+                    image_bytes
+                )
+                OUTPUT INSERTED.job_image_id
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, image_role, source_url, content_type, content_sha256, image_bytes),
+            )
+            row = cursor.fetchone()
+        finally:
+            _close_cursor(cursor)
+
+        return _require_identity_value(row, "Failed to upsert job image.")
+
+
 class SnapshotRepository:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
 
-    def upsert_snapshot(self, extracted_detail: ExtractedDetail, extraction_version: str) -> int:
+    def upsert_snapshot(
+        self,
+        extracted_detail: ExtractedDetail,
+        extraction_version: str,
+        banner_image_id: int | None = None,
+        footer_image_id: int | None = None,
+    ) -> int:
         field_provenance = _json_text(extracted_detail.field_provenance)
         extraction_warnings = _json_text(extracted_detail.extraction_warnings)
 
@@ -421,6 +491,8 @@ class SnapshotRepository:
                         published_utc = ?,
                         job_description_raw = ?,
                         job_description_clean = ?,
+                        banner_image_id = ?,
+                        footer_image_id = ?,
                         field_provenance = ?,
                         extraction_warnings = ?
                     WHERE job_snapshot_id = ?
@@ -440,6 +512,8 @@ class SnapshotRepository:
                         _normalize_datetime(extracted_detail.published_utc),
                         extracted_detail.job_description_raw,
                         extracted_detail.job_description_clean,
+                        banner_image_id,
+                        footer_image_id,
                         field_provenance,
                         extraction_warnings,
                         job_snapshot_id,
@@ -467,11 +541,13 @@ class SnapshotRepository:
                     published_utc,
                     job_description_raw,
                     job_description_clean,
+                    banner_image_id,
+                    footer_image_id,
                     field_provenance,
                     extraction_warnings
                 )
                 OUTPUT INSERTED.job_snapshot_id
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     extracted_detail.job_id,
@@ -491,6 +567,8 @@ class SnapshotRepository:
                     _normalize_datetime(extracted_detail.published_utc),
                     extracted_detail.job_description_raw,
                     extracted_detail.job_description_clean,
+                    banner_image_id,
+                    footer_image_id,
                     field_provenance,
                     extraction_warnings,
                 ),

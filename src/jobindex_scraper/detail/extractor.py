@@ -531,6 +531,8 @@ def _build_extracted_detail(
         location_normalized=_normalize_text(effective_location_raw),
         published_raw=task.published_raw,
         published_utc=published_utc,
+        banner_image_url_raw=task.banner_image_url_raw,
+        footer_image_url_raw=task.footer_image_url_raw,
         job_description_raw=description_raw,
         job_description_clean=description_clean,
         description_text_hash=hashlib.sha256(description_clean.encode("utf-8")).hexdigest(),

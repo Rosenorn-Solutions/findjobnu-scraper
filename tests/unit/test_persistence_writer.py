@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import unittest
 from uuid import uuid4
 
+import requests
+
 from jobindex_scraper.config import Settings
 from jobindex_scraper.models import (
     DetailExtractionFailure,
@@ -144,13 +146,58 @@ class _FakeEventRepository:
 
 class _FakeSnapshotRepository:
     def __init__(self) -> None:
-        self.calls: list[tuple[ExtractedDetail, str]] = []
+        self.calls: list[tuple[ExtractedDetail, str, int | None, int | None]] = []
         self._next_snapshot_id = 500
 
-    def upsert_snapshot(self, extracted_detail: ExtractedDetail, extraction_version: str) -> int:
-        self.calls.append((extracted_detail, extraction_version))
+    def upsert_snapshot(
+        self,
+        extracted_detail: ExtractedDetail,
+        extraction_version: str,
+        banner_image_id: int | None = None,
+        footer_image_id: int | None = None,
+    ) -> int:
+        self.calls.append((extracted_detail, extraction_version, banner_image_id, footer_image_id))
         self._next_snapshot_id += 1
         return self._next_snapshot_id
+
+
+class _FakeJobImageRepository:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, str, str, str | None, bytes]] = []
+        self._next_image_id = 700
+
+    def upsert_image(
+        self,
+        job_id: int,
+        image_role: str,
+        source_url: str,
+        content_type: str | None,
+        image_bytes: bytes,
+    ) -> int:
+        self.calls.append((job_id, image_role, source_url, content_type, image_bytes))
+        self._next_image_id += 1
+        return self._next_image_id
+
+
+class _FakeHttpResponse:
+    def __init__(self, content: bytes, content_type: str = "image/png", status_code: int = 200) -> None:
+        self.content = content
+        self.headers = {"Content-Type": content_type}
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+
+class _FakeImageSession:
+    def __init__(self, responses: dict[str, _FakeHttpResponse]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, float]] = []
+
+    def get(self, url: str, timeout: float):
+        self.calls.append((url, timeout))
+        return self.responses[url]
 
 
 class PersistenceWriterTests(unittest.TestCase):
@@ -171,7 +218,8 @@ class PersistenceWriterTests(unittest.TestCase):
             database_url=(
                 "Driver={ODBC Driver 18 for SQL Server};"
                 "Server=localhost,1433;"
-                "Database=test;Uid=sa;Pwd=secret;"
+                "Database=test;Uid=sa;"
+                f"Pwd={'placeholder-password'};"
                 "Encrypt=yes;TrustServerCertificate=yes;"
             ),
             extraction_version="2026.05.01",
@@ -368,7 +416,17 @@ class PersistenceWriterTests(unittest.TestCase):
         connection = _FakeConnection()
         job_repository = _FakeJobRepository()
         snapshot_repository = _FakeSnapshotRepository()
+        job_image_repository = _FakeJobImageRepository()
         event_repository = _FakeEventRepository()
+        image_session = _FakeImageSession(
+            {
+                "https://www.jobindex.dk/img/banner.png": _FakeHttpResponse(b"banner-bytes"),
+                "https://cdn.example.com/footer.png": _FakeHttpResponse(
+                    b"footer-bytes",
+                    content_type="image/jpeg",
+                ),
+            }
+        )
         writer = PersistenceWriter(
             connection=connection,
             run_repository=_FakeRunRepository(),
@@ -377,7 +435,9 @@ class PersistenceWriterTests(unittest.TestCase):
             job_category_repository=_UnusedRepository(),
             observation_repository=_UnusedRepository(),
             snapshot_repository=snapshot_repository,
+            job_image_repository=job_image_repository,
             event_repository=event_repository,
+            image_session=image_session,
         )
         extracted_detail = ExtractedDetail(
             scrape_run_id=uuid4(),
@@ -396,6 +456,8 @@ class PersistenceWriterTests(unittest.TestCase):
             location_normalized="Odense",
             published_raw="2026-05-02T09:00:00+02:00",
             published_utc=datetime.now(timezone.utc),
+            banner_image_url_raw="/img/banner.png",
+            footer_image_url_raw="https://cdn.example.com/footer.png",
             job_description_raw="Build data products",
             job_description_clean="Build data products",
             description_text_hash="c" * 64,
@@ -414,8 +476,25 @@ class PersistenceWriterTests(unittest.TestCase):
         self.assertEqual(result.extraction_failed, 0)
         self.assertEqual(len(snapshot_repository.calls), 1)
         self.assertEqual(snapshot_repository.calls[0][1], "2026.05.02")
+        self.assertEqual(snapshot_repository.calls[0][2:], (701, 702))
         self.assertEqual(job_repository.snapshot_calls, [(101, 501)])
         self.assertEqual(event_repository.calls[0]["event"], "snapshot_written")
+        self.assertEqual(event_repository.calls[0]["details"]["banner_image_id"], 701)
+        self.assertEqual(event_repository.calls[0]["details"]["footer_image_id"], 702)
+        self.assertEqual(
+            job_image_repository.calls,
+            [
+                (101, "banner", "https://www.jobindex.dk/img/banner.png", "image/png", b"banner-bytes"),
+                (101, "footer", "https://cdn.example.com/footer.png", "image/jpeg", b"footer-bytes"),
+            ],
+        )
+        self.assertEqual(
+            image_session.calls,
+            [
+                ("https://www.jobindex.dk/img/banner.png", 20.0),
+                ("https://cdn.example.com/footer.png", 20.0),
+            ],
+        )
 
     def test_persist_extracted_details_records_failure_events(self) -> None:
         connection = _FakeConnection()
