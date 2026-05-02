@@ -14,6 +14,11 @@ from .pagination import extract_next_page_url
 
 
 STASH_MARKER = "var Stash ="
+HTML_PARSER = "html.parser"
+CATEGORY_TITLE_PATTERN = re.compile(
+    r"^Ledige job(?:\s*-\s*|\s+i\s+)(.+?)\s*\|\s*Jobindex$",
+    re.IGNORECASE,
+)
 
 
 class ListingParseError(ValueError):
@@ -26,6 +31,11 @@ def parse_jobindex_listing_page(
     page_url: str,
 ) -> ListingPageResult:
     stash_payload = extract_stash_payload(html_content)
+    resolved_category = _resolve_category_record(
+        html_content=html_content,
+        category=category,
+        stash_payload=stash_payload,
+    )
     next_page_url = extract_next_page_url(stash_payload, page_url)
     observations: list[ListingObservation] = []
     seen_urls: set[str] = set()
@@ -33,7 +43,7 @@ def parse_jobindex_listing_page(
     for default_position, fragment_html in enumerate(_iter_listing_fragments(stash_payload), start=1):
         observation = _parse_listing_fragment(
             fragment_html=fragment_html,
-            category=category,
+            category=resolved_category,
             page_url=page_url,
             default_position=default_position,
         )
@@ -45,6 +55,7 @@ def parse_jobindex_listing_page(
         observations.append(observation)
 
     return ListingPageResult(
+        category=resolved_category,
         page_url=page_url,
         next_page_url=next_page_url,
         observations=tuple(observations),
@@ -52,7 +63,7 @@ def parse_jobindex_listing_page(
 
 
 def extract_stash_payload(html_content: str) -> dict[str, Any]:
-    soup = BeautifulSoup(html_content, "html.parser")
+    soup = BeautifulSoup(html_content, HTML_PARSER)
     for script in soup.find_all("script"):
         script_text = script.get_text(" ", strip=False)
         if STASH_MARKER not in script_text:
@@ -214,6 +225,55 @@ def _extract_image_urls(root: BeautifulSoup) -> tuple[str | None, str | None]:
     banner_url = image_tags[0].get("src")
     footer_url = image_tags[-1].get("src")
     return banner_url, footer_url
+
+
+def _resolve_category_record(
+    html_content: str,
+    category: CategoryRecord,
+    stash_payload: dict[str, Any],
+) -> CategoryRecord:
+    soup = BeautifulSoup(html_content, HTML_PARSER)
+    category_name = _extract_category_name_from_title(soup) or category.category_name
+    listing_url = (
+        _extract_canonical_listing_url_from_soup(soup)
+        or _extract_canonical_listing_url_from_stash(stash_payload)
+        or category.listing_url
+    )
+    return CategoryRecord(
+        category_key=category.category_key,
+        category_name=category_name,
+        listing_url=_canonicalize_url(listing_url),
+    )
+
+
+def _extract_category_name_from_title(soup: BeautifulSoup) -> str | None:
+    if soup.title is None:
+        return None
+    title_text = _normalize_text(soup.title.get_text(" ", strip=True))
+    if title_text is None:
+        return None
+    match = CATEGORY_TITLE_PATTERN.match(title_text)
+    if match is None:
+        return None
+    return _normalize_text(match.group(1))
+
+
+def _extract_canonical_listing_url_from_soup(soup: BeautifulSoup) -> str | None:
+    canonical_link = soup.find("link", rel="canonical")
+    if canonical_link is None:
+        return None
+    return _normalize_text(canonical_link.get("href"))
+
+
+def _extract_canonical_listing_url_from_stash(stash_payload: dict[str, Any]) -> str | None:
+    search_response = (
+        stash_payload.get("jobsearch/result_app", {})
+        .get("storeData", {})
+        .get("searchResponse")
+    )
+    if not isinstance(search_response, dict):
+        return None
+    return _normalize_text(search_response.get("link_canonical"))
 
 
 def _build_listing_hash(

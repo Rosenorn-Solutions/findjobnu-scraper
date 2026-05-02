@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 import io
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+from uuid import uuid4
 
-from jobindex_scraper.main import _build_referral_summary, _print_results, build_argument_parser
+from jobindex_scraper.main import _build_referral_summary, _print_results, _run_collection, build_argument_parser
+from jobindex_scraper.models import CategoryRecord, ListingObservation, ListingPageResult
 from jobindex_scraper.referral_stats import ReferralHostStat, ReferralPlatformStat, ReferralStatsReport
 
 
@@ -121,6 +125,82 @@ class MainTests(unittest.TestCase):
         self.assertIn('"top_platform_domains"', text)
         self.assertIn('"top_third_party_platform_domains"', text)
         self.assertIn('"jobindex.dk"', text)
+
+    @patch("jobindex_scraper.main.JobindexListingCollector")
+    def test_run_collection_refreshes_category_from_resolved_page_metadata(self, collector_cls) -> None:
+        requested_category = CategoryRecord(
+            category_key="subid_1",
+            category_name="subid_1",
+            listing_url="https://www.jobindex.dk/jobsoegning?subid=1",
+        )
+        resolved_category = CategoryRecord(
+            category_key="subid_1",
+            category_name="Systemudvikling og programmering",
+            listing_url="https://www.jobindex.dk/jobsoegning/it/systemudvikling",
+        )
+        observation = ListingObservation(
+            listing_page_url=resolved_category.listing_url,
+            category_key=resolved_category.category_key,
+            category_name=resolved_category.category_name,
+            listing_position=1,
+            job_url_raw="/jobannonce/example-job",
+            canonical_job_url="https://www.jobindex.dk/jobannonce/example-job",
+            source_host="www.jobindex.dk",
+            job_title_raw="Senior Developer",
+            company_name_raw="Example Company",
+            company_url_raw=None,
+            location_raw="Odense",
+            published_raw=None,
+            banner_image_url_raw=None,
+            footer_image_url_raw=None,
+            listing_hash="a" * 64,
+        )
+        collector_cls.return_value.collect_pages.return_value = [
+            ListingPageResult(
+                category=resolved_category,
+                page_url=resolved_category.listing_url,
+                next_page_url=None,
+                observations=(observation,),
+            )
+        ]
+
+        class _FakeWriter:
+            def __init__(self) -> None:
+                self.category_updates: list[CategoryRecord] = []
+                self.persist_calls: list[tuple[object, int, list[ListingObservation]]] = []
+
+            def ensure_category(self, category: CategoryRecord) -> int:
+                self.category_updates.append(category)
+                return 77
+
+            def persist_listing_observations(self, scrape_run_id, category_id, observations):
+                self.persist_calls.append((scrape_run_id, category_id, list(observations)))
+                return SimpleNamespace(
+                    changed_jobs=0,
+                    detail_tasks=(),
+                    jobs_touched=1,
+                    new_jobs=1,
+                    observations_written=len(observations),
+                    unchanged_jobs=0,
+                )
+
+        writer = _FakeWriter()
+        scrape_run_id = uuid4()
+
+        summary, observations, detail_tasks = _run_collection(
+            category=requested_category,
+            max_pages=1,
+            settings=object(),
+            writer=writer,
+            scrape_run_id=scrape_run_id,
+            category_id=11,
+        )
+
+        self.assertEqual(writer.category_updates, [resolved_category])
+        self.assertEqual(writer.persist_calls[0][1], 77)
+        self.assertEqual(summary["category_name"], "Systemudvikling og programmering")
+        self.assertEqual(observations[0].category_name, "Systemudvikling og programmering")
+        self.assertEqual(detail_tasks, [])
 
 
 if __name__ == "__main__":

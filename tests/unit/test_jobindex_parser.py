@@ -44,6 +44,7 @@ class JobindexParserTests(unittest.TestCase):
             page_url="https://www.jobindex.dk/jobsoegning?subid=1",
         )
 
+        self.assertEqual(page_result.category, category)
         self.assertEqual(page_result.next_page_url, "https://www.jobindex.dk/jobsoegning/test?page=2")
         self.assertEqual(len(page_result.observations), 1)
 
@@ -60,6 +61,50 @@ class JobindexParserTests(unittest.TestCase):
         self.assertEqual(
             observation.footer_image_url_raw,
             "https://cdn.example.com/footer.png",
+        )
+
+    def test_parse_jobindex_listing_page_resolves_category_from_title_and_canonical(self) -> None:
+        fragment_html = """
+        <div id="jobad-wrapper-h123" data-jobsearch_position='1'>
+            <h4><a href="/jobannonce/example-job">Senior Developer</a></h4>
+        </div>
+        """
+        stash_payload = {
+            "jobsearch/result_app": {
+                "storeData": {
+                    "results": [{"html": fragment_html}],
+                }
+            }
+        }
+        html_document = f"""
+        <html>
+            <head>
+                <title>Ledige job - Systemudvikling og programmering | Jobindex</title>
+                <link rel="canonical" href="https://www.jobindex.dk/jobsoegning/it/systemudvikling" />
+            </head>
+            <body><script>var Stash = {json.dumps(stash_payload)};</script></body>
+        </html>
+        """
+        category = CategoryRecord(
+            category_key="subid_1",
+            category_name="subid_1",
+            listing_url="https://www.jobindex.dk/jobsoegning?subid=1",
+        )
+
+        page_result = parse_jobindex_listing_page(
+            html_content=html_document,
+            category=category,
+            page_url="https://www.jobindex.dk/jobsoegning?subid=1",
+        )
+
+        self.assertEqual(page_result.category.category_name, "Systemudvikling og programmering")
+        self.assertEqual(
+            page_result.category.listing_url,
+            "https://www.jobindex.dk/jobsoegning/it/systemudvikling",
+        )
+        self.assertEqual(
+            page_result.observations[0].category_name,
+            "Systemudvikling og programmering",
         )
 
     def test_parse_jobindex_listing_page_requires_stash_payload(self) -> None:
@@ -106,6 +151,11 @@ class JobindexParserTests(unittest.TestCase):
             page_url="https://www.jobindex.dk/jobsoegning?subid=1",
         )
 
+        self.assertEqual(page_result.category.category_name, category.category_name)
+        self.assertEqual(
+            page_result.category.listing_url,
+            "https://www.jobindex.dk/jobsoegning/it/systemudvikling",
+        )
         self.assertEqual(
             page_result.next_page_url,
             "https://www.jobindex.dk/jobsoegning/it/systemudvikling?page=2",

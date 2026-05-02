@@ -186,6 +186,7 @@ def _run_collection(
 ) -> tuple[dict[str, object], list[ListingObservation], list[DetailFetchTask]]:
     collector = JobindexListingCollector(settings=settings)
     page_results = collector.collect_pages(category=category, max_pages=max_pages)
+    resolved_category = page_results[0].category if page_results else category
     observations = [
         observation
         for page_result in page_results
@@ -195,6 +196,8 @@ def _run_collection(
     persistence_result = None
     detail_tasks: list[DetailFetchTask] = []
     if writer is not None and scrape_run_id is not None and category_id is not None:
+        if resolved_category != category:
+            category_id = writer.ensure_category(resolved_category)
         persistence_result = writer.persist_listing_observations(
             scrape_run_id=scrape_run_id,
             category_id=category_id,
@@ -203,8 +206,8 @@ def _run_collection(
         detail_tasks = list(persistence_result.detail_tasks)
 
     summary = {
-        "category_key": category.category_key,
-        "category_name": category.category_name,
+        "category_key": resolved_category.category_key,
+        "category_name": resolved_category.category_name,
         "changed_jobs": persistence_result.changed_jobs if persistence_result else None,
         "detail_tasks_queued": len(detail_tasks),
         "pages_collected": len(page_results),

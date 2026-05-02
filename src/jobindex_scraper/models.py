@@ -34,6 +34,7 @@ class ListingObservation:
 
 @dataclass(frozen=True)
 class ListingPageResult:
+    category: CategoryRecord
     page_url: str
     next_page_url: str | None
     observations: tuple[ListingObservation, ...]
