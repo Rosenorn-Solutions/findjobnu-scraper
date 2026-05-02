@@ -47,8 +47,9 @@ class RepositoryTests(unittest.TestCase):
         )
 
         self.assertEqual(category_id, 7)
-        self.assertEqual(len(cursor.executed), 3)
+        self.assertEqual(len(cursor.executed), 2)
         self.assertIn("INSERT INTO categories", cursor.executed[1][0])
+        self.assertIn("OUTPUT INSERTED.category_id", cursor.executed[1][0])
         self.assertTrue(cursor.closed)
 
     def test_job_upsert_returns_new_when_url_is_missing(self) -> None:
@@ -64,6 +65,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(result.job_id, 101)
         self.assertEqual(result.state, "new")
         self.assertIn("INSERT INTO jobs", cursor.executed[1][0])
+        self.assertIn("OUTPUT INSERTED.job_id", cursor.executed[1][0])
         self.assertTrue(cursor.closed)
 
     def test_job_upsert_returns_changed_when_hash_differs(self) -> None:

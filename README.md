@@ -141,10 +141,23 @@ sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip
 ```
 
-If you also want a local MSSQL instance on the same server:
+If you want persisted runs with `--record-run` or `--fetch-details`, the application host also needs the unixODBC runtime and the Microsoft SQL Server ODBC driver, even when SQL Server itself is running on another host or in a local container:
 
 ```bash
 sudo apt install -y ca-certificates curl gnupg unixodbc
+
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" | sudo tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null
+
+sudo apt update
+sudo ACCEPT_EULA=Y apt install -y msodbcsql18 mssql-tools18
+```
+
+If you also want a local MSSQL instance on the same server, install Docker as well:
+
+```bash
+sudo apt install -y ca-certificates curl gnupg
 
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -157,12 +170,6 @@ echo \
 
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" | sudo tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null
-
-sudo apt update
-sudo ACCEPT_EULA=Y apt install -y msodbcsql18 mssql-tools18
 ```
 
 ### 2. Create an application user
@@ -635,6 +642,17 @@ If the traceback mentions `libodbc.so.2`, `pyodbc` is present but the system ODB
 ```bash
 sudo apt update
 sudo apt install -y unixodbc
+sudo ACCEPT_EULA=Y apt install -y msodbcsql18
+```
+
+If `apt` says `Unable to locate package msodbcsql18`, the Microsoft package repository is not configured on that host yet. Add it, refresh apt, and retry:
+
+```bash
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" | sudo tee /etc/apt/sources.list.d/microsoft-prod.list > /dev/null
+sudo apt update
 sudo ACCEPT_EULA=Y apt install -y msodbcsql18
 ```
 

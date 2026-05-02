@@ -14,9 +14,6 @@ from ..models import (
 )
 
 
-_SCOPE_IDENTITY_SQL = "SELECT CAST(SCOPE_IDENTITY() AS BIGINT)"
-
-
 class RunRepository:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
@@ -107,18 +104,16 @@ class CategoryRepository:
             cursor.execute(
                 """
                 INSERT INTO categories (category_key, category_name, listing_url)
+                OUTPUT INSERTED.category_id
                 VALUES (?, ?, ?)
                 """,
                 (category.category_key, category.category_name, category.listing_url),
             )
-            cursor.execute(_SCOPE_IDENTITY_SQL)
             row = cursor.fetchone()
         finally:
             _close_cursor(cursor)
 
-        if row is None:
-            raise RuntimeError("Failed to upsert category record.")
-        return int(row[0])
+        return _require_identity_value(row, "Failed to upsert category record.")
 
 
 class JobRepository:
@@ -146,15 +141,19 @@ class JobRepository:
                 cursor.execute(
                     """
                     INSERT INTO jobs (canonical_job_url, source_host, current_listing_hash)
+                    OUTPUT INSERTED.job_id
                     VALUES (?, ?, ?)
                     """,
                     (canonical_job_url, source_host, listing_hash),
                 )
-                cursor.execute(_SCOPE_IDENTITY_SQL)
                 inserted_row = cursor.fetchone()
-                if inserted_row is None:
-                    raise RuntimeError("Failed to insert listing-backed job state.")
-                return JobUpsertResult(job_id=int(inserted_row[0]), state="new")
+                return JobUpsertResult(
+                    job_id=_require_identity_value(
+                        inserted_row,
+                        "Failed to insert listing-backed job state.",
+                    ),
+                    state="new",
+                )
 
             job_id = int(row[0])
             current_listing_hash = row[1]
@@ -209,18 +208,16 @@ class JobRepository:
             cursor.execute(
                 """
                 INSERT INTO jobs (canonical_job_url, source_host)
+                OUTPUT INSERTED.job_id
                 VALUES (?, ?)
                 """,
                 (canonical_job_url, source_host),
             )
-            cursor.execute(_SCOPE_IDENTITY_SQL)
             row = cursor.fetchone()
         finally:
             _close_cursor(cursor)
 
-        if row is None:
-            raise RuntimeError("Failed to upsert job identity.")
-        return int(row[0])
+        return _require_identity_value(row, "Failed to upsert job identity.")
 
     def record_detail_fetch_outcome(self, job_id: int, http_status: int | None) -> None:
         cursor = self.connection.cursor()
@@ -473,6 +470,7 @@ class SnapshotRepository:
                     field_provenance,
                     extraction_warnings
                 )
+                OUTPUT INSERTED.job_snapshot_id
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -497,14 +495,11 @@ class SnapshotRepository:
                     extraction_warnings,
                 ),
             )
-            cursor.execute(_SCOPE_IDENTITY_SQL)
             row = cursor.fetchone()
         finally:
             _close_cursor(cursor)
 
-        if row is None:
-            raise RuntimeError("Failed to upsert job snapshot.")
-        return int(row[0])
+        return _require_identity_value(row, "Failed to upsert job snapshot.")
 
 
 class EventRepository:
@@ -567,3 +562,9 @@ def _close_cursor(cursor: Any) -> None:
     close = getattr(cursor, "close", None)
     if callable(close):
         close()
+
+
+def _require_identity_value(row: Any, message: str) -> int:
+    if row is None or row[0] is None:
+        raise RuntimeError(message)
+    return int(row[0])
