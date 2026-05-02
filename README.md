@@ -496,25 +496,74 @@ journalctl -u jobindex-scraper@16.service -f
 
 ### Multiple categories on a schedule
 
-The application processes one category per invocation. If you want multiple categories in one scheduled run, wrap them in a small shell script.
+The application processes one category per invocation. For a full sweep, prefer one serial wrapper script over enabling a large number of `jobindex-scraper@<subid>.timer` instances at once. That keeps request volume predictable across Jobindex and downstream ATS hosts, and it makes overlap prevention much simpler.
 
-Example wrapper: `/opt/jobindex-scraper/findjobnu-scraper/bin/run-categories.sh`
+### Full run across all top-level categories
+
+For a practical full run, use one wrapper that walks the current top-level Jobindex category subid range.
+
+At the time of writing, the top-level range is handled as `1..28`. If Jobindex changes that catalog later, set `JOBINDEX_SCRAPER_SUBIDS` in `/etc/jobindex-scraper.env` instead of editing the checked-in script.
+
+The repository now ships these checked-in assets:
+
+- `bin/run-all-categories.sh`
+- `systemd/jobindex-scraper-all.service`
+- `systemd/jobindex-scraper-all.timer`
+
+Install the wrapper script:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-APP_DIR=/opt/jobindex-scraper/findjobnu-scraper
-SCRAPER="$APP_DIR/.venv/bin/jobindex-scraper"
-
-subids=(1 10 11 16 17 21 24 27 28)
-
-for subid in "${subids[@]}"; do
-  "$SCRAPER" --subid "$subid" --max-pages 999 --record-run --fetch-details
-done
+sudo install -d -o jobindex -g jobindex /opt/jobindex-scraper/findjobnu-scraper/bin
+sudo install -o jobindex -g jobindex -m 0755 bin/run-all-categories.sh /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.sh
 ```
 
-Then point a `systemd` one-shot service at that script instead of the raw console command.
+Run it once manually first:
+
+```bash
+sudo -u jobindex /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.sh
+```
+
+Optional overrides:
+
+- Set `JOBINDEX_SCRAPER_SUBIDS` in `/etc/jobindex-scraper.env` to run only a specific subset, for example `JOBINDEX_SCRAPER_SUBIDS="1 10 11 16 17 21 24 27 28"`.
+- Set `MAX_PAGES` in the service environment if you want the full-run wrapper to use something other than `999`.
+
+### systemd service for the full run
+
+Install the dedicated one-shot service for the wrapper. It uses `flock` so a second full run exits immediately instead of overlapping with one already in progress.
+
+```bash
+sudo install -o root -g root -m 0644 systemd/jobindex-scraper-all.service /etc/systemd/system/jobindex-scraper-all.service
+```
+
+### systemd timer for the full run
+
+Start conservatively. A full all-category sweep is much heavier than a single-category timer.
+
+```bash
+sudo install -o root -g root -m 0644 systemd/jobindex-scraper-all.timer /etc/systemd/system/jobindex-scraper-all.timer
+```
+
+Enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now jobindex-scraper-all.timer
+```
+
+Start one run immediately if you want to test the service path:
+
+```bash
+sudo systemctl start jobindex-scraper-all.service
+```
+
+Follow logs:
+
+```bash
+journalctl -u jobindex-scraper-all.service -f
+```
+
+If you only want a curated subset instead of a full sweep, set `JOBINDEX_SCRAPER_SUBIDS="1 10 11 16 17 21 24 27 28"` in `/etc/jobindex-scraper.env`.
 
 ## Testing
 

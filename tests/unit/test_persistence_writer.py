@@ -501,6 +501,8 @@ class PersistenceWriterTests(unittest.TestCase):
         self.assertIn("CREATE TABLE scrape_runs", ddl)
         self.assertIn("CREATE TABLE categories", ddl)
         self.assertIn("current_listing_hash", ddl)
+        self.assertIn("canonical_job_url VARCHAR(900) NOT NULL UNIQUE", ddl)
+        self.assertIn("listing_page_url VARCHAR(900) NOT NULL", ddl)
         self.assertIn("SYSUTCDATETIME", ddl)
         self.assertNotIn("ON CONFLICT", ddl)
 

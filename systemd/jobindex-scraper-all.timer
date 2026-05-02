@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Jobindex scraper across all top-level categories every 12 hours
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=12h
+Persistent=true
+Unit=jobindex-scraper-all.service
+
+[Install]
+WantedBy=timers.target

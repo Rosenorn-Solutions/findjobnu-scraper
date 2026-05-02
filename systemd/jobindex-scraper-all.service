@@ -1,0 +1,17 @@
+[Unit]
+Description=Jobindex scraper full run across all top-level categories
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jobindex
+Group=jobindex
+WorkingDirectory=/opt/jobindex-scraper/findjobnu-scraper
+EnvironmentFile=/etc/jobindex-scraper.env
+ExecStart=/usr/bin/flock -n /var/lock/jobindex-scraper-all.lock /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.sh
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
