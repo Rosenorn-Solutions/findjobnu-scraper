@@ -46,6 +46,17 @@ class PersistencePoolTests(unittest.TestCase):
 
         self.assertIn("pyodbc is required for MSSQL persistence", str(raised.exception))
 
+    def test_import_error_mentions_unixodbc_when_runtime_library_is_missing(self) -> None:
+        import_error = ImportError("libodbc.so.2: cannot open shared object file")
+
+        with patch.object(pool, "import_module", side_effect=import_error):
+            with self.assertRaises(pool.MissingDependencyError) as raised:
+                pool._import_pyodbc()
+
+        message = str(raised.exception)
+        self.assertIn("unixODBC runtime is missing", message)
+        self.assertIn("msodbcsql18", message)
+
 
 if __name__ == "__main__":
     unittest.main()

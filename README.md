@@ -630,6 +630,22 @@ Install project dependencies inside the active virtual environment:
 python -m pip install -e .
 ```
 
+If the traceback mentions `libodbc.so.2`, `pyodbc` is present but the system ODBC runtime is missing. On Ubuntu 24.04 install the native packages and retry:
+
+```bash
+sudo apt update
+sudo apt install -y unixodbc
+sudo ACCEPT_EULA=Y apt install -y msodbcsql18
+```
+
+You can verify the driver registration with:
+
+```bash
+odbcinst -q -d
+```
+
+You should see `ODBC Driver 18 for SQL Server` in that output before rerunning the scraper.
+
 ### The scraper seems to ignore `config.ini`
 
 That is expected with the current codebase. Runtime configuration is environment-variable based, using `JOBINDEX_SCRAPER_*` variables from your shell or `/etc/jobindex-scraper.env`.
