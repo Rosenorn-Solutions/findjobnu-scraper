@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Jobindex scraper for Jobindex subid %i every 6 hours
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=6h
+AccuracySec=1m
+Persistent=true
+Unit=jobindex-scraper@%i.service
+
+[Install]
+WantedBy=timers.target
