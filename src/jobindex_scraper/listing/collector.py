@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from requests import Session
+from requests import HTTPError, Session
 
 from ..config import Settings
 from ..http.client import build_session
@@ -32,7 +32,17 @@ class JobindexListingCollector:
 
             visited_urls.add(next_page_url)
             response = self.session.get(next_page_url, timeout=self.settings.http_timeout_seconds)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except HTTPError:
+                if response.status_code == 404:
+                    logger.warning(
+                        "Skipping unavailable Jobindex category page %s for %s",
+                        next_page_url,
+                        category.category_key,
+                    )
+                    break
+                raise
 
             page_result = parse_jobindex_listing_page(
                 html_content=response.text,

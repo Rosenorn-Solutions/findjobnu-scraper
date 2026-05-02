@@ -532,6 +532,8 @@ sudo -u jobindex /opt/jobindex-scraper/findjobnu-scraper/bin/run-all-categories.
 
 The wrapper auto-loads `/etc/jobindex-scraper.env` before starting the scraper, so the manual command above uses the same environment file as the systemd service. If you keep the file somewhere else, set `JOBINDEX_SCRAPER_ENV_FILE=/path/to/file.env` before invoking the wrapper.
 
+If Jobindex returns `404` for a subid in the configured sequence, the scraper logs that category as unavailable and continues with the remaining subids instead of aborting the full run.
+
 Optional overrides:
 
 - Set `JOBINDEX_SCRAPER_SUBIDS` in `/etc/jobindex-scraper.env` to run only a specific subset, for example `JOBINDEX_SCRAPER_SUBIDS="1 10 11 16 17 21 24 27 28"`.
